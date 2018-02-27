@@ -18,11 +18,15 @@
     <ClInclude Include="..\..\Include\Base\Constant.hpp" />
     <ClInclude Include="..\..\Include\Base\DataSet.hpp" />
     <ClInclude Include="..\..\Include\Base\DispatchSystem.hpp" />
+    <ClInclude Include="..\..\Include\Base\Environment.hpp" />
     <ClInclude Include="..\..\Include\Base\Memory.hpp" />
     <ClInclude Include="..\..\Include\Base\Pipeline.hpp" />
     <ClInclude Include="..\..\Include\Base\Math.hpp" />
     <ClInclude Include="..\..\Include\Base\Queue.hpp" />
+    <ClInclude Include="..\..\Include\Interaction\D3D11.hpp" />
+    <ClInclude Include="..\..\Include\Interaction\BoundImage.hpp" />
     <ClInclude Include="..\..\Include\Interaction\OpenGL.hpp" />
+    <ClInclude Include="..\..\Include\Interaction\SwapChain.hpp" />
     <ClInclude Include="..\..\Include\IO\Image.hpp" />
     <ClInclude Include="..\..\Include\IO\Model.hpp" />
     <ClInclude Include="..\..\Include\IO\Video.hpp" />
@@ -37,32 +41,42 @@
     <ClInclude Include="..\..\Include\ScanLineRenderer\PointRasterizer.hpp" />
     <ClInclude Include="..\..\Include\ScanLineRenderer\PostProcess.hpp" />
     <ClInclude Include="..\..\Include\ScanLineRenderer\Primitive.hpp" />
+    <ClInclude Include="..\..\Include\ScanLineRenderer\Shared.hpp" />
+    <ClInclude Include="..\..\Include\ScanLineRenderer\SphereRasterizer.hpp" />
     <ClInclude Include="..\..\Include\ScanLineRenderer\TriangleRasterizer.hpp" />
     <ClInclude Include="..\..\Include\ScanLineRenderer\RenderingCache.hpp" />
     <ClInclude Include="..\..\Include\ScanLineRenderer\Vertex.hpp" />
     <ClInclude Include="..\..\Include\Scene\ECS.hpp" />
     <ClInclude Include="..\..\ThirdParty\IMGUI\imconfig.h" />
     <ClInclude Include="..\..\ThirdParty\IMGUI\imgui.h" />
+    <ClInclude Include="..\..\ThirdParty\IMGUI\imgui_impl_dx11.h" />
     <ClInclude Include="..\..\ThirdParty\IMGUI\imgui_impl_glfw_gl3.h" />
     <ClInclude Include="..\..\ThirdParty\IMGUI\imgui_internal.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\Src\Base\Common.cpp" />
     <ClCompile Include="..\..\Src\Base\DispatchSystem.cpp" />
+    <ClCompile Include="..\..\Src\Base\Environment.cpp" />
     <ClCompile Include="..\..\Src\Base\Memory.cpp" />
     <ClCompile Include="..\..\Src\Base\Pipeline.cpp" />
     <ClCompile Include="..\..\Src\IO\Model.cpp" />
     <ClCompile Include="..\..\Src\Scene\ECS.cpp" />
     <ClCompile Include="..\..\ThirdParty\IMGUI\imgui.cpp" />
     <ClCompile Include="..\..\ThirdParty\IMGUI\imgui_draw.cpp" />
+    <ClCompile Include="..\..\ThirdParty\IMGUI\imgui_impl_dx11.cpp" />
     <ClCompile Include="..\..\ThirdParty\IMGUI\imgui_impl_glfw_gl3.cpp" />
     <CudaCompile Include="..\..\Src\Base\Constant.cu" />
-    <CudaCompile Include="..\..\Src\Interaction\OpenGL.cu">
+    <ClCompile Include="..\..\Src\Interaction\D3D11.cpp">
       <FileType>Document</FileType>
-    </CudaCompile>
+    </ClCompile>
+    <ClCompile Include="..\..\Src\Interaction\BoundImage.cpp" />
+    <ClCompile Include="..\..\Src\Interaction\OpenGL.cpp">
+      <FileType>Document</FileType>
+    </ClCompile>
     <CudaCompile Include="..\..\Src\PBR\DataDrivenBRDF.cu" />
     <CudaCompile Include="..\..\Src\ScanLineRenderer\LineRasterizer.cu" />
-    <CudaCompile Include="..\..\Src\ScanLineRenderer\TriangleRasterizer.cu" />
+    <CudaCompile Include="..\..\Src\ScanLineRenderer\SphereRasterizer.cu" />
+    <CudaCompile Include="..\..\Src\ScanLineRenderer\Shared.cu" />
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="..\..\Src\IO\Image.cu" />
@@ -119,6 +133,7 @@
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <SDLCheck>false</SDLCheck>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <StructMemberAlignment>Default</StructMemberAlignment>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -152,7 +167,7 @@
     </CudaLink>
     <Lib>
       <AdditionalLibraryDirectories>$(SolutionDir)Bin;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>assimp.lib;glfw3.lib;opengl32.lib;glew32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>assimp.lib;glfw3.lib;opengl32.lib;glew32.lib;cudart.lib;cudadevrt.lib;d3d11.lib;d3dcompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Lib>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -174,6 +189,7 @@
       <CompileAs>CompileAsCpp</CompileAs>
       <PreprocessToFile>false</PreprocessToFile>
       <DisableSpecificWarnings>4819</DisableSpecificWarnings>
+      <StructMemberAlignment>Default</StructMemberAlignment>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -212,7 +228,7 @@
       <AdditionalDependencies>cudart.lib;cudadevrt.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </CudaLink>
     <Lib>
-      <AdditionalDependencies>assimp.lib;glfw3.lib;opengl32.lib;glew32.lib;cudart.lib;cudadevrt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>assimp.lib;glfw3.lib;opengl32.lib;glew32.lib;cudart.lib;cudadevrt.lib;d3d11.lib;d3dcompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Lib>
     <Lib>
       <AdditionalLibraryDirectories>$(SolutionDir)Bin;$(CUDA_PATH)\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>

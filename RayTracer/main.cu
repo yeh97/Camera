@@ -2,6 +2,12 @@
 #include <cstdio>
 #include <IO/Image.hpp>
 #include <thread>
+#include <Base/Environment.hpp>
+#include <Interaction/SwapChain.hpp>
+#include <Base/CompileBegin.hpp>
+#include <IMGUI/imgui.h>
+#include <Base/CompileEnd.hpp>
+
 using namespace std::chrono_literals;
 
 Camera camera;
@@ -19,7 +25,7 @@ void setUIStyle() {
     style.FrameRounding = 5.0f;
 }
 
-void renderGUI(IMGUIWindow& window) {
+void renderGUI(D3D11Window& window) {
     window.newFrame();
     ImGui::Begin("Debug");
     ImGui::SetWindowPos({ 0, 0 });
@@ -65,7 +71,13 @@ struct RenderingTask {
 };
 
 int main() {
-    getEnvironment().init();
+    auto&& window = getD3D11Window();
+    setUIStyle();
+    ImGui::GetIO().WantCaptureKeyboard = true;
+
+    auto&& env = getEnvironment();
+    env.init(GraphicsInteroperability::D3D11);
+
     try {
         camera.near = 1.0f;
         camera.far = 200.0f;
@@ -77,15 +89,12 @@ int main() {
 
         arg.baseColor = vec3{220,223,227}/255.0f;
 
-        IMGUIWindow window;
-        setUIStyle();
-        ImGui::GetIO().WantCaptureKeyboard = true;
-
         SwapChainT swapChain(3);
         std::queue<RenderingTask> tasks;
         {
-            DispatchSystem system(2);
-            auto lum = allocBuffer<float>();
+            Stream copyStream;
+            window.bindBackBuffer(copyStream.get());
+            auto lum = DataViewer<float>();
             while (window.update()) {
                 const auto size = window.size();
                 if (size.x == 0 || size.y == 0) {
@@ -94,22 +103,24 @@ int main() {
                 }
                 SwapChainT::SharedFrame frame;
                 while (true) {
-                    system.update(1ms);
-
                     if (!tasks.empty() && tasks.front().future.finished()) {
                         frame = tasks.front().frame;
                         tasks.pop();
                         break;
                     }
                 }
-                window.present(frame->image);
+                if (frame->size == size) {
+                    window.present(frame->postRT->get());
+                    renderGUI(window);
+                    window.swapBuffers();
+                }
                 swapChain.push(std::move(frame));
-                renderGUI(window);
-                window.swapBuffers();
             }
+            window.unbindBackBuffer();
         }
+        env.uninit();
     }
-    catch (const std::runtime_error& e) {
+    catch (const std::exception& e) {
         puts("Catched an error:");
         puts(e.what());
         system("pause");

@@ -1,6 +1,5 @@
 #pragma once
 #include  <Base/Math.hpp>
-#include <Base/Pipeline.hpp>
 #include <Base/DispatchSystem.hpp>
 #include <Base/CompileBegin.hpp>
 #include <device_atomic_functions.h>
@@ -33,9 +32,9 @@ private:
     DataViewer<T> mData;
 public:
     explicit DepthBuffer(const uvec2 size) :mSize(size),
-        mData(allocBuffer<T>(calcSize(size.x,32U)*calcSize(size.y,32U)*1024U)) {}
+        mData(calcSize(size.x,32U)*calcSize(size.y,32U)*1024U) {}
     void clear(CommandBuffer& buffer) {
-        buffer.pushOperator([=](Stream& stream) {stream.memset(mData, 0xff); });
+        buffer.pushOperator([=](ID,ResourceManager&,Stream& stream) {stream.memset(mData, 0xff); });
     }
     auto size() const {
         return mSize;

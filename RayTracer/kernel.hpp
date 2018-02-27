@@ -1,22 +1,9 @@
 #pragma once
-#include <Interaction/OpenGL.hpp>
+#include <Interaction/D3D11.hpp>
 #include <Base/DispatchSystem.hpp>
-#include <Base/DataSet.hpp>
 #include <Base/Builtin.hpp>
-#include <IO/Model.hpp>
-#include <PBR/BRDF.hpp>
 #include <PBR/PhotorealisticRendering.hpp>
-
-using VI = StaticMesh::Vertex;
-
-enum OutInfo {
-    Pos,
-    Normal,
-    Tangent,
-    TexCoord
-};
-
-using OI = Args<VAR(Pos, vec3), VAR(Normal, vec3),VAR(Tangent, vec3)>;
+#include <PBR/BRDF.hpp>
 
 struct FrameBufferGPU final {
     BuiltinRenderTargetGPU<RGBA> color;
@@ -26,61 +13,28 @@ struct FrameBufferGPU final {
     }
 };
 
-class ImageResourceInstance final : public ResourceInstance {
-private:
-    Image& mImage;
-    std::shared_ptr<BuiltinRenderTarget<RGBA>> mTarget;
-    cudaStream_t mStream;
-public:
-    explicit ImageResourceInstance(Image& image): mImage(image), mStream(nullptr) {}
-
-    void getRes(void* ptr, const cudaStream_t stream) override {
-        if (!mTarget) {
-            mTarget = std::make_shared<BuiltinRenderTarget<RGBA>>(mImage.bind(stream), mImage.size());
-            mStream = stream;
-        }
-        *reinterpret_cast<BuiltinRenderTargetGPU<RGBA>*>(ptr) = mTarget->toTarget();
-    }
-
-    ~ImageResourceInstance() {
-        if (mTarget) {
-            mTarget.reset();
-            mImage.unbind(mStream);
-        }
-    }
-};
-
-class ImageResource final : public Resource<BuiltinRenderTargetGPU<RGBA>> {
-private:
-    Image& mImage;
-public:
-    ImageResource(CommandBuffer& buffer, Image& image): Resource(buffer), mImage(image) {}
-
-    ~ImageResource() {
-        addInstance(std::make_unique<ImageResourceInstance>(mImage));
-    }
-};
-
 struct FrameBufferCPU final {
     std::unique_ptr<BuiltinArray<RGBA>> colorBuffer;
+    std::unique_ptr<BuiltinArray<RGBA8>> postBuffer;
     std::unique_ptr<BuiltinRenderTarget<RGBA>> colorRT;
-    Image image;
+    std::unique_ptr<BuiltinRenderTarget<RGBA8>> postRT;
     uvec2 size;
     FrameBufferGPU data;
 
-    void resize(uvec2 nsiz) {
+    void resize(const uvec2 nsiz) {
         if (size == nsiz)return;
         size = nsiz;
-        colorBuffer = std::make_unique<BuiltinArray<RGBA>>(size,cudaArraySurfaceLoadStore);
+        colorBuffer = std::make_unique<BuiltinArray<RGBA>>(size, cudaArraySurfaceLoadStore);
         colorRT = std::make_unique<BuiltinRenderTarget<RGBA>>(*colorBuffer);
-        image.resize(size);
+        postBuffer = std::make_unique<BuiltinArray<RGBA8>>(size, cudaArraySurfaceLoadStore);
+        postRT = std::make_unique<BuiltinRenderTarget<RGBA8>>(*postBuffer);
         data.color = colorRT->toTarget();
         data.fsize = size;
     }
 
     MemoryRef<FrameBufferGPU> getData(CommandBuffer& buffer) const {
         auto dataGPU = buffer.allocConstant<FrameBufferGPU>();
-        buffer.memcpy(dataGPU, [buf=data](auto call) {
+        buffer.memcpy(dataGPU, [buf = data](auto call) {
             call(&buf);
         });
         return dataGPU;

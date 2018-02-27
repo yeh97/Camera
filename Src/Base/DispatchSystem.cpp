@@ -5,17 +5,12 @@
 
 namespace Impl {
 
-    ID getPID() {
-        thread_local static ID cnt = 0;
-        return ++cnt;
-    }
-
-    DeviceMemory::DeviceMemory(CommandBuffer& buffer, const size_t size, const MemoryType type)
-        :Resource(buffer), mSize(size), mType(type) {}
+    DeviceMemory::DeviceMemory(ResourceManager& manager, const size_t size, const MemoryType type)
+        : Resource(manager), mSize(size), mType(type) {}
 
     DeviceMemory::~DeviceMemory() {
         if (mType == MemoryType::Global)
-            addInstance(std::make_unique<GlobalMemory>(mSize));
+            addInstance(std::make_unique<GlobalMemory>(mManager,mSize));
         else
             addInstance(std::make_unique<ConstantMemory>(mSize));
     }
@@ -24,66 +19,96 @@ namespace Impl {
         return mSize;
     }
 
-    void DeviceMemoryInstance::getRes(void * res,cudaStream_t) {
+    void DeviceMemoryInstance::getRes(void* res, cudaStream_t) {
         *reinterpret_cast<void**>(res) = get();
     }
 
     DeviceMemoryInstance::DeviceMemoryInstance(const size_t size):mSize(size) {}
 
-    void DeviceMemoryInstance::memset(int, Stream &) {}
-
-    GlobalMemory::GlobalMemory(const size_t size):DeviceMemoryInstance(size) {}
-
-    void * GlobalMemory::get() {
-        if (!mMemory)mMemory = std::make_unique<Memory>(mSize);
-        return mMemory->getPtr();
+    void DeviceMemoryInstance::memset(int, Stream&) {
+        throw std::logic_error("This memory doesn't support memset.");
     }
 
-    void GlobalMemory::set(const void * src, Stream & stream) {
-        checkError(cudaMemcpyAsync(get(),src,mSize,cudaMemcpyDefault,stream.get()));
+    class L1GlobalMemoryPool final:public ResourceRecycler {
+    private:
+        std::vector<UniqueMemory> mPool[41];
+    public:
+        UniqueMemory alloc(const size_t size) {
+            if (size == 0)return nullptr;
+            const auto level = calcSizeLevel(size);
+            if(mPool[level].empty())return allocGlobalMemory(size);
+            auto ptr = std::move(mPool[level].back());
+            mPool[level].pop_back();
+            return ptr;
+        }
+        void free(UniqueMemory ptr,const size_t size) {
+            if(size==0)return;
+            const auto level = calcSizeLevel(size);
+            mPool[level].emplace_back(std::move(ptr));
+        }
+    };
+
+    bool GlobalMemory::hasRecycler() const {
+        return true;
     }
 
-    void GlobalMemory::memset(const int mask, Stream & stream) {
-        checkError(cudaMemsetAsync(get(),mask,mSize,stream.get()));
+    GlobalMemory::GlobalMemory(ResourceManager& manager,const size_t size)
+        : DeviceMemoryInstance(size),mPool(manager.getRecycler<L1GlobalMemoryPool>()) {}
+
+    GlobalMemory::~GlobalMemory() {
+        mPool.free(std::move(mMemory),mSize);
+    }
+
+    void* GlobalMemory::get() {
+        if (!mMemory)mMemory = mPool.alloc(mSize);
+        return mMemory.get();
+    }
+
+    void GlobalMemory::set(const void* src, Stream& stream) {
+        checkError(cudaMemcpyAsync(get(), src, mSize, cudaMemcpyDefault, stream.get()));
+    }
+
+    void GlobalMemory::memset(const int mask, Stream& stream) {
+        checkError(cudaMemsetAsync(get(), mask, mSize, stream.get()));
     }
 
     ConstantMemory::ConstantMemory(const size_t size)
-        :DeviceMemoryInstance(size),mPtr(nullptr) {}
+        : DeviceMemoryInstance(size), mPtr(nullptr) {}
 
     ConstantMemory::~ConstantMemory() {
-        if(mPtr)constantFree(mPtr,static_cast<unsigned int>(mSize));
+        if (mPtr)constantFree(mPtr, static_cast<unsigned int>(mSize));
     }
 
-    void * ConstantMemory::get() {
+    void* ConstantMemory::get() {
         if (mPtr == nullptr)mPtr = constantAlloc(static_cast<unsigned int>(mSize));
         return mPtr;
     }
 
-    void ConstantMemory::set(const void * src, Stream & stream) {
-        constantSet(get(),src,static_cast<unsigned int>(mSize),stream.get());
+    void ConstantMemory::set(const void* src, Stream& stream) {
+        constantSet(get(), src, static_cast<unsigned int>(mSize), stream.get());
     }
 
-    DeviceMemoryInstance & Operator::getMemory(const ID id) const {
-        return dynamic_cast<DeviceMemoryInstance&>(mBuffer.getResource(id));
+    DeviceMemoryInstance& Operator::getMemory(const ID id) const {
+        return dynamic_cast<DeviceMemoryInstance&>(mManager.getResource(id));
     }
 
-    Operator::Operator(CommandBuffer & buffer):mBuffer(buffer),mID(getPID()) {}
+    Operator::Operator(ResourceManager& manager)
+        : mManager(manager), mID(manager.getOperatorPID()) {}
 
     ID Operator::getID() const {
         return mID;
     }
 
-    Memset::Memset(CommandBuffer & buffer, const ID memoryID, const int mask)
-        :Operator(buffer), mMemoryID(memoryID), mMask(mask) {}
+    Memset::Memset(ResourceManager& manager, const ID memoryID, const int mask)
+        : Operator(manager), mMemoryID(memoryID), mMask(mask) {}
 
-    void Memset::emit(Stream & stream) {
-        getMemory(mMemoryID).memset(mMask,stream);
+    void Memset::emit(Stream& stream) {
+        getMemory(mMemoryID).memset(mMask, stream);
     }
 
-    Memcpy::Memcpy(CommandBuffer & buffer, const ID dst
-        , std::function<void(std::function<void(const void*)>)>&& src):
-        Operator(buffer),mDst(dst),mSrc(src){}
-
+    Memcpy::Memcpy(ResourceManager& manager, const ID dst
+                   , std::function<void(std::function<void(const void*)>)>&& src)
+        : Operator(manager), mDst(dst), mSrc(src) {}
 
     void Memcpy::emit(Stream& stream) {
         mSrc([this,&stream](auto ptr) {
@@ -91,7 +116,7 @@ namespace Impl {
         });
     }
 
-    void KernelLaunchDim::emit(Stream & stream) {
+    void KernelLaunchDim::emit(Stream& stream) {
         mClosure(stream);
     }
 
@@ -99,199 +124,256 @@ namespace Impl {
         mClosure(stream);
     }
 
-    static void CUDART_CB streamCallback(cudaStream_t, cudaError_t, void *userData) {
-        *reinterpret_cast<bool*>(userData) = true;
+    void CastTag::get(ResourceManager& manager, const ID id, void* ptr) {
+        manager.getResource(id).getRes(ptr, manager.getStream());
     }
 
-    void CastTag::get(CommandBuffer & buffer, const ID id,void* ptr) {
-        buffer.getResource(id).getRes(ptr,buffer.getStream());
-    }
+    DMRef::DMRef(const std::shared_ptr<DeviceMemory>& ref): ResourceRef(ref) {}
 
-    DMRef::DMRef(const std::shared_ptr<DeviceMemory>& ref):ResourceRef(ref) {}
     size_t DMRef::size() const {
         return dynamic_cast<DeviceMemory&>(*mRef).size();
     }
 
-    static void CUDART_CB downloadCallback(cudaStream_t, cudaError_t, void *userData) {
-        const auto info = reinterpret_cast<std::pair<unsigned int, std::atomic_uint*>*>(userData);
-        *info->second = info->first;
-        delete info;
-    }
-
-    void LaunchSize::download(std::atomic_uint & dst, CommandBuffer & buffer) const {
+    void LaunchSize::download(unsigned int& dst, CommandBuffer& buffer) const {
         auto id = mHelper;
-        auto tmp = new std::pair<unsigned int, std::atomic_uint*>(0,&dst);
-        buffer.pushOperator([id,&buffer,tmp](Stream& stream) {
-            checkError(cudaMemcpyAsync(&tmp->first,cast(id,buffer),sizeof(unsigned int),
-                cudaMemcpyDeviceToHost,stream.get()));
+        auto&& manager = buffer.getResourceManager();
+        buffer.pushOperator([id,&manager,&dst](ID,ResourceManager&,Stream& stream) {
+            checkError(cudaMemcpyAsync(&dst, cast(id, manager),
+                                       sizeof(unsigned int), cudaMemcpyDeviceToHost, stream.get()));
         });
-        buffer.addCallback(downloadCallback,tmp);
     }
 }
 
-void CommandBuffer::registerResource(ID id, std::unique_ptr<ResourceInstance>&& instance) {
-    mResource.emplace(id, std::move(instance));
-}
-
-void CommandBuffer::setPromise(const std::shared_ptr<bool>& promise) {
-    mPromise = promise;
-    addCallback(Impl::streamCallback, promise.get());
-    mLast = 0;
+void ResourceManager::registerResource(ID id, std::unique_ptr<ResourceInstance>&& instance) {
+    ++mRegisteredResourceCount;
+    mResources.emplace(id,std::make_pair(mOperatorCount,std::move(instance)));
 }
 
 void CommandBuffer::memset(Impl::DMRef& memory, int mark) {
-    mCommandQueue.emplace(std::make_unique<Impl::Memset>(*this, memory.getID(),mark));
+    mCommandQueue.emplace(std::make_unique<Impl::Memset>(*mResourceManager,
+                                                         memory.getID(), mark));
 }
 
-void CommandBuffer::memcpy(Impl::DMRef & dst
-    , std::function<void(std::function<void(const void*)>)>&& src) {
-    mCommandQueue.emplace(std::make_unique<Impl::Memcpy>(*this, dst.getID(), std::move(src)));
+void CommandBuffer::memcpy(Impl::DMRef& dst,
+                           std::function<void(std::function<void(const void*)>)>&& src) {
+    mCommandQueue.emplace(std::make_unique<Impl::Memcpy>(*mResourceManager,
+                                                         dst.getID(), std::move(src)));
 }
 
-void CommandBuffer::addCallback(cudaStreamCallback_t func, void * data) {
-    pushOperator([=](Stream& stream) {
-        checkError(cudaStreamAddCallback(stream.get(), func, data, 0));
+namespace Impl {
+    struct CallbackInfo final {
+        ID id;
+        ResourceManager& manager;
+        std::function<void()> func;
+        CallbackInfo(const ID time,ResourceManager& resManager, std::function<void()> callable):
+            id(time),manager(resManager),func(std::move(callable)){}
+    };
+
+    static void CUDART_CB streamCallback(cudaStream_t, cudaError_t, void* userData) {
+        auto ptr = reinterpret_cast<CallbackInfo*>(userData);
+        ptr->func();
+        ptr->manager.syncPoint(ptr->id);
+        delete ptr;
+    }
+}
+
+void CommandBuffer::addCallback(const std::function<void()>& func) {
+    pushOperator([func](ID id,ResourceManager& manager,Stream& stream) {
+        const auto data = new Impl::CallbackInfo(id,manager,func);
+        checkError(cudaStreamAddCallback(stream.get(), Impl::streamCallback, data, 0));
     });
 }
 
 void CommandBuffer::sync() {
-    pushOperator([](Stream& stream) {stream.sync(); });
+    pushOperator([](ID id,ResourceManager& manager,Stream& stream) {
+        stream.sync();
+        manager.syncPoint(id);
+    });
 }
 
 void CommandBuffer::pushOperator(std::unique_ptr<Impl::Operator>&& op) {
     mCommandQueue.emplace(std::move(op));
 }
 
-void CommandBuffer::pushOperator(std::function<void(Stream&)>&& op) {
-    mCommandQueue.emplace(std::make_unique<FunctionOperator>(*this,std::move(op)));
+void CommandBuffer::pushOperator(std::function<void(ID,ResourceManager&, Stream&)>&& op) {
+    mCommandQueue.emplace(std::make_unique<FunctionOperator>(*mResourceManager,std::move(op)));
 }
 
-namespace Impl {
-    void CUDART_CB updateLast(cudaStream_t, cudaError_t, void *userData) {
-        const auto info=reinterpret_cast<std::pair<CommandBuffer*, ID>*>(userData);
-        info->first->mLast = info->second;
-        delete info;
-    }
+ResourceManager& CommandBuffer::getResourceManager() {
+    return *mResourceManager;
 }
 
-void CommandBuffer::update(Stream& stream) {
-    if (!mCommandQueue.empty()) {
-        mStream = stream.get();
-        auto&& command = mCommandQueue.front();
-        command->emit(stream);
-        if ((mCommandQueue.size() & 0b1111) ==0) {
-            const auto ptr = new std::pair<CommandBuffer*, ID>(this, command->getID());
-            checkError(cudaStreamAddCallback(mStream, Impl::updateLast, ptr, 0));
-        }
-        mCommandQueue.pop();
-        if (mLast != mUpdated) {
-            std::vector<ID> list;
-            for (auto&& x : mResource)
-                if (x.second->shouldRelease(mLast))
-                    list.emplace_back(x.first);
-            for (auto&& id : list)
-                mResource.erase(id);
-            mLast = mUpdated;
-        }
-    }
+std::unique_ptr<Task> CommandBuffer::bindStream(Stream& stream, std::shared_ptr<Impl::TaskState> promise) {
+    return std::make_unique<Task>(stream, std::move(mResourceManager),
+                                  mCommandQueue, std::move(promise));
 }
 
-bool CommandBuffer::finished() const {
-    return mCommandQueue.empty();
+ResourceInstance& ResourceManager::getResource(const ID id) {
+    return *mResources.find(id)->second.second;
 }
 
-bool CommandBuffer::isDone() const {
-    return *mPromise;
+void ResourceManager::bindStream(cudaStream_t stream) {
+    if (mResourceCount != mRegisteredResourceCount)
+        throw std::logic_error("Some resources haven't been registered yet.");
+    mStream = stream;
 }
 
-ResourceInstance & CommandBuffer::getResource(const ID id) {
-    return *mResource.find(id)->second;
-}
-
-cudaStream_t CommandBuffer::getStream() const {
+cudaStream_t ResourceManager::getStream() const {
     return mStream;
 }
 
-CommandBuffer::CommandBuffer(): mLast(0), mUpdated(0) {}
+void ResourceManager::gc(const ID time) {
+    std::vector<ID> list;
+    for (auto&& x : mResources)
+        if (mSyncPoint>=x.second.first || (time>= x.second.first && x.second.second->hasRecycler()))
+            list.emplace_back(x.first);
+    for (auto&& id : list)
+        mResources.erase(id);
+}
 
-void DispatchSystem::update(const Clock::time_point t) {
-    auto& stream = *std::min_element(mStreams.begin(), mStreams.end());
-    if (stream.free() && !mTasks.empty()) {
-        stream.set(std::move(mTasks.front()));
-        mTasks.pop();
+ID ResourceManager::allocResource() {
+    return ++mResourceCount;
+}
+
+ID ResourceManager::getOperatorPID() {
+    return ++mOperatorCount;
+}
+
+void ResourceManager::syncPoint(const ID time) {
+    mSyncPoint = time;
+}
+
+CommandBuffer::CommandBuffer(): mResourceManager(std::make_unique<ResourceManager>()) {}
+
+DispatchSystem::StreamInfo& DispatchSystem::getStream() {
+    return *std::min_element(mStreams.begin(), mStreams.end());
+}
+
+namespace Impl {
+    static size_t getAsyncEngineCount() {
+        int device;
+        checkError(cudaGetDevice(&device));
+        cudaDeviceProp prop{};
+        checkError(cudaGetDeviceProperties(&prop, device));
+        return std::max(1, prop.asyncEngineCount);
     }
-    stream.update(t);
 }
 
-DispatchSystem::DispatchSystem(const size_t size):mStreams(size){}
-
-Future DispatchSystem::submit(std::unique_ptr<CommandBuffer>&& buffer) {
-    mTasks.push(std::move(buffer));
-    const auto promise = std::make_shared<bool>(false);
-    mTasks.back()->setPromise(promise);
-    return Future{ promise };
-}
-
-size_t DispatchSystem::size() const {
-    return mTasks.size();
-}
-
-void DispatchSystem::update(const std::chrono::nanoseconds tot) {
-    const auto end = Clock::now()+tot;
-    while (true) {
-        const auto t = Clock::now();
-        if (t > end)return;
-        update(t);
-        if (mTasks.empty() && std::all_of(mStreams.cbegin(), mStreams.cend(), [](const auto& info) {
-            return info.free();
-        })) return;
-    }
-}
+DispatchSystem::DispatchSystem(CommandBufferQueue& queue)
+    : mStreams(Impl::getAsyncEngineCount()), mQueue(queue) {}
 
 void DispatchSystem::update() {
-    update(Clock::now());
+    auto&& stream = getStream();
+    if (stream.free()) {
+        auto task = mQueue.getTask();
+        if (task.first)stream.set(std::move(task));
+        else std::this_thread::yield();
+    }
+    stream.update(Clock::now());
 }
 
-Future::Future(std::shared_ptr<bool> promise):mPromise(std::move(promise)) {}
+Future::Future(std::shared_ptr<Impl::TaskState> promise): mPromise(std::move(promise)) {}
 
 bool Future::finished() const {
-    return *mPromise;
+    return mPromise->isReleased;
 }
 
-FunctionOperator::FunctionOperator(CommandBuffer& buffer,
-    std::function<void(Stream&)>&& closure):Operator(buffer),mClosure(closure) {}
+FunctionOperator::FunctionOperator(ResourceManager& manager,
+    std::function<void(ID,ResourceManager&, Stream&)>&& closure)
+    : Operator(manager), mClosure(closure) {}
 
-void FunctionOperator::emit(Stream & stream) {
-    mClosure(stream);
+void FunctionOperator::emit(Stream& stream) {
+    mClosure(getID(),mManager,stream);
 }
 
-DispatchSystem::StreamInfo::StreamInfo():mLast(Clock::now()) {}
+DispatchSystem::StreamInfo::StreamInfo(): mLast(Clock::now()) {}
 
 bool DispatchSystem::StreamInfo::free() const {
-    return mTask==nullptr && mPool.empty();
+    return mTask == nullptr;
 }
 
-void DispatchSystem::StreamInfo::set(std::unique_ptr<CommandBuffer>&& task) {
-    mTask = std::move(task);
+void DispatchSystem::StreamInfo::set(CommandBufferQueue::UnboundTask&& task) {
+    mTask = task.second->bindStream(mStream, std::move(task.first));
 }
 
 void DispatchSystem::StreamInfo::update(const Clock::time_point point) {
     mPool.erase(std::remove_if(mPool.begin(), mPool.end(),
-        [](auto&& task) {return task->isDone(); }), mPool.end());
+                               [](auto&& task) {
+                                   return task->isDone();
+                               }), mPool.end());
     if (mTask) {
-        mLast = point;
-        mTask->update(mStream);
+        mTask->update();
         if (mTask->finished())
             mPool.emplace_back(std::move(mTask));
     }
+    mLast = point;
 }
 
-bool DispatchSystem::StreamInfo::operator<(const StreamInfo & rhs) const {
-    return mLast<rhs.mLast;
+bool DispatchSystem::StreamInfo::operator<(const StreamInfo& rhs) const {
+    return mLast < rhs.mLast;
 }
 
-ResourceInstance::ResourceInstance():mEnd(Impl::getPID()) {}
+bool ResourceInstance::hasRecycler() const {
+    return false;
+}
 
-bool ResourceInstance::shouldRelease(const ID current) const {
-    return current>mEnd;
+void CommandBufferQueue::submit(std::shared_ptr<Impl::TaskState> promise,
+                                std::unique_ptr<CommandBuffer> buffer) {
+    std::lock_guard<std::mutex> guard(mMutex);
+    mQueue.emplace(std::move(promise), std::move(buffer));
+}
+
+CommandBufferQueue::UnboundTask CommandBufferQueue::getTask() {
+    if (mQueue.empty())return {};
+    std::lock_guard<std::mutex> guard(mMutex);
+    auto ptr = std::move(mQueue.front());
+    mQueue.pop();
+    return ptr;
+}
+
+size_t CommandBufferQueue::size() const {
+    return mQueue.size();
+}
+
+void CommandBufferQueue::clear() {
+    decltype(mQueue) empty;
+    mQueue.swap(empty);
+}
+
+Task::Task(Stream& stream, std::unique_ptr<ResourceManager> manager,
+           std::queue<std::unique_ptr<Impl::Operator>>& commandQueue,
+           std::shared_ptr<Impl::TaskState> promise)
+    : mResourceManager(std::move(manager)),
+    mPromise(std::move(promise)), mStream(stream) {
+    mCommandQueue.swap(commandQueue);
+    mResourceManager->bindStream(mStream.get());
+}
+
+Task::~Task() {
+    mPromise->isReleased = true;
+}
+
+namespace Impl {
+    static void CUDART_CB endCallback(cudaStream_t, cudaError_t, void* userData) {
+        reinterpret_cast<TaskState*>(userData)->isDone = true;
+    }
+}
+
+void Task::update() {
+    if (!mCommandQueue.empty()) {
+        auto&& command = mCommandQueue.front();
+        command->emit(mStream);
+        mResourceManager->gc(command->getID());
+        mCommandQueue.pop();
+        if (mCommandQueue.empty())
+            checkError(cudaStreamAddCallback(mStream.get(), Impl::endCallback, mPromise.get(), 0));
+    }
+}
+
+bool Task::finished() const {
+    return mCommandQueue.empty();
+}
+
+bool Task::isDone() const {
+    return mPromise->isDone;
 }
